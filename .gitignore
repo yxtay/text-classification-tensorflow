@@ -1,0 +1,13 @@
+# python
+__pycache__/
+.pyc
+
+# ide
+.idea/
+
+# project
+data/
+checkpoints/
+.ipynb_checkpoints/
+*.ipynb
+main.log*
