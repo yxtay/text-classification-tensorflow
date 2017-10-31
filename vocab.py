@@ -1,6 +1,7 @@
 from collections import Counter
 import pickle
 
+from gensim.matutils import corpus2csc
 import numpy as np
 
 from logger import get_logger
@@ -66,6 +67,7 @@ class VocabDict(object):
     def fit(self, docs, max_vocab=0, min_count=2, freq_metric="df"):
         self.add_documents(docs)
         self.trim(max_vocab, min_count, freq_metric)
+        self.trim(freq_metric="tf")
         return self
 
     def transform(self, docs, pad_length=0):
@@ -89,6 +91,18 @@ class VocabDict(object):
                 else:
                     tokens.append(self.id2token[token_id])
             yield tokens
+
+    @staticmethod
+    def to_gensim_corpus(vecs):
+        for vec in vecs:
+            count = Counter(vec)
+            yield count.items()
+
+    def to_dtm(self, vecs):
+        n_docs = len(vecs)
+        corpus = self.to_gensim_corpus(vecs)
+        dtm = corpus2csc(corpus, num_terms=len(self), dtype=int, num_docs=n_docs).T
+        return dtm
 
     def save(self, filename):
         with open(filename, "wb") as f:

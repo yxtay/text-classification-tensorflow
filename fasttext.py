@@ -6,8 +6,9 @@ import sys
 import numpy as np
 import pandas as pd
 
-from data_utils import prepare_acl_imdb
+from acl_imdb import read_prepared_data
 from logger import get_logger
+from utils import make_dirs, PROJECT_DIR
 
 logger = get_logger(__name__)
 
@@ -28,14 +29,28 @@ def prepare_fasttext_txt(df, text_col="cleaned_text", label_col=None, txt_out=No
     return fasttext_series
 
 
-def skipgram(fasttext_bin, train_txt, model_bin, **kwargs):
-    command = [fasttext_bin, "skipgram", "-input", train_txt, "-output", model_bin]
+def unsupervised(fasttext_bin, train_txt, model_bin, model="skipgram", **kwargs):
+    command = [fasttext_bin, model, "-input", train_txt, "-output", model_bin]
 
-    # custom params
-    params = {"minCount": 5, "minCountLabel": 0, "wordNgrams": 1, "bucket": 2000000,
-              "minn": 3, "maxn": 6, "t": 0.0001, "label": "__label__",
-              "lr": 0.05, "lrUpdateRate": 100, "dim": 100, "ws": 5, "epoch": 5,
-              "neg": 5, "loss": "ns", "thread": 12}
+    # params
+    params = {"minCount": None,  # default: 5
+              "minCountLabel": None,  # default: 0
+              "wordNgrams": None,  # default: 1
+              "bucket": None,  # default: 2000000
+              "minn": None,  # default: 3
+              "maxn": None,  # default: 6
+              "t": None,  # default: 0.0001
+              "label": None,  # default: "__label__"
+              "lr": None,  # default: 0.05
+              "lrUpdateRate": None,  # default: 100
+              "dim": None,  # default: 100
+              "ws": None,  # default: 5
+              "epoch": None,  # default: 5
+              "neg": None,  # default: 5
+              "loss": None,  # default: "ns"
+              "thread": None,  # default: 12
+              "pretrainedVectors": None,  # default: None
+              }
     params.update(kwargs)
     for key, value in params.items():
         if value is not None:
@@ -47,6 +62,8 @@ def skipgram(fasttext_bin, train_txt, model_bin, **kwargs):
 
 
 def print_word_vectors(fasttext_bin, model_bin, vocab_txt, vocab_vec):
+    if not model_bin.endswith(".bin"):
+        model_bin += ".bin"
     command = [fasttext_bin, "print-word-vectors", model_bin]
 
     # call FastText
@@ -70,11 +87,25 @@ def print_word_vectors(fasttext_bin, model_bin, vocab_txt, vocab_vec):
 def supervised(fasttext_bin, train_txt, model_bin, **kwargs):
     command = [fasttext_bin, "supervised", "-input", train_txt, "-output", model_bin]
 
-    # custom params
-    params = {"minCount": 1, "minCountLabel": 0, "wordNgrams": 1, "bucket": 2000000,
-              "minn": 0, "maxn": 0, "t": 0.0001, "label": "__label__",
-              "lr": 0.1, "lrUpdateRate": 100, "dim": 100, "ws": 5, "epoch": 5,
-              "neg": 5, "loss": "softmax", "thread": 12}
+    # params
+    params = {"minCount": None,  # default: 1
+              "minCountLabel": None,  # default: 0
+              "wordNgrams": None,  # default: 1
+              "bucket": None,  # default: 2000000
+              "minn": None,  # default: 0
+              "maxn": None,  # default: 0
+              "t": None,  # default: 0.0001
+              "label": None,  # default: "__label__"
+              "lr": None,  # default: 0.1
+              "lrUpdateRate": None,  # default: 100
+              "dim": None,  # default: 100
+              "ws": None,  # default: 5
+              "epoch": None,  # default: 5
+              "neg": None,  # default: 5
+              "loss": None,  # default: "softmax"
+              "thread": None,  # default: 12
+              "pretrainedVectors": None,  # default: None
+              }
     params.update(kwargs)
     for key, value in params.items():
         if value is not None:
@@ -85,50 +116,88 @@ def supervised(fasttext_bin, train_txt, model_bin, **kwargs):
     subprocess.run(command)
 
 
-def predict_prob(fasttext_bin, model_bin, test_txt, k=2, label="__label__True"):
+def test(fasttext_bin, model_bin, test_txt, k=1):
+    if not model_bin.endswith(".bin"):
+        model_bin += ".bin"
+    command = [fasttext_bin, "test", model_bin, test_txt, str(k)]
+    logger.debug("calling FastText: %s.", " ".join(command))
+    subprocess.run(command)
+
+
+def predict(fasttext_bin, model_bin, test_txt, k=1, label_prefix="__label__"):
+    if not model_bin.endswith(".bin"):
+        model_bin += ".bin"
+    command = [fasttext_bin, "predict", model_bin, test_txt, str(k)]
+
+    # call FastText
+    logger.debug("calling FastText: %s.", " ".join(command))
+    proc = subprocess.run(command, stdout=subprocess.PIPE, bufsize=1, universal_newlines=True)
+
+    # process stdout
+    stdout_lines = proc.stdout.split("\n")[:-1]
+    pred = np.empty((len(stdout_lines), k), dtype=object)
+    for i, line in enumerate(stdout_lines):
+        pred[i, :] = np.array(line.replace(label_prefix, "").split(" "))
+    return pred
+
+
+def predict_prob(fasttext_bin, model_bin, test_txt, k=2, labels=(True,), label_prefix="__label__"):
+    if not model_bin.endswith(".bin"):
+        model_bin += ".bin"
     command = [fasttext_bin, "predict-prob", model_bin, test_txt, str(k)]
 
     # call FastText
     logger.debug("calling FastText: %s.", " ".join(command))
     proc = subprocess.run(command, stdout=subprocess.PIPE, bufsize=1, universal_newlines=True)
 
-    stdout_lines = proc.stdout.split("\n")
-    prob = np.empty(len(stdout_lines))
+    # process stdout
+    stdout_lines = proc.stdout.split("\n")[:-1]
+    prob = np.empty((len(stdout_lines), len(labels)))
+    labels = [label_prefix + str(el) for el in labels]
     for i, line in enumerate(stdout_lines):
-        prob_dict = dict(zip(*[iter(line.split())] * 2))
-        prob[i] = float(prob_dict.get(label, 0))
+        prob_dict = dict(zip(*[iter(line.split(" "))] * 2))
+        prob[i, :] = np.fromiter((prob_dict.get(el, 0) for el in labels), float)
     return prob
 
 
-def test(fasttext_bin, model_bin, test_txt, k=1):
-    command = [fasttext_bin, "test", model_bin, test_txt, str(k)]
-    logger.debug("calling FastText: %s.", " ".join(command))
-    subprocess.run(command)
+def print_sentence_vectors(fasttext_bin, model_bin, test_txt, test_vec):
+    if not model_bin.endswith(".bin"):
+        model_bin += ".bin"
+    command = [fasttext_bin, "print-sentence-vectors", model_bin]
+
+    # call FastText
+    with open(test_txt, "r") as fin, open(test_vec, "w") as fout:
+        logger.debug("calling FastText: %s.", " ".join(command))
+        subprocess.run(command, stdin=fin, stdout=fout)
 
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Text classification with FastText.")
     parser.add_argument("--fasttext-bin", required=True,
-                        help="path to fasttext bin")
+                        help="path to fasttext bin (required)")
+    parser.add_argument("--data-dir", default="data",
+                        help="directory path of ACL IMDB data (default: %(default)s)")
     parser.add_argument("--model-dir", default="checkpoints/fasttext",
-                        help="directory path to save model")
+                        help="directory path to save model (default: %(default)s)")
     parser.add_argument("--model-file", default="supervised",
-                        help="file name of supervised model")
+                        help="file name of supervised model (default: %(default)s)")
     parser.add_argument("--pretrained", action="store_true",
                         help="whether to use pretrained vectors on unlabelled text")
     parser.add_argument("--skipgram-file", default="skipgram",
-                        help="file name of skipgram model")
+                        help="file name of skipgram model (default: %(default)s)")
+    parser.add_argument("--log-path", default=os.path.join(PROJECT_DIR, "main.log"),
+                        help="path of log file (default: %(default)s)")
 
     args = parser.parse_args()
-    logger = get_logger(__name__, console=True)
+    logger = get_logger(__name__, log_path=args.log_path, console=True)
     logger.debug("call: %s.", " ".join(sys.argv))
     logger.debug("ArgumentParse: %s.", args)
 
     try:
-        os.makedirs(args.model_dir, exist_ok=True)
+        make_dirs(args.model_dir + "/", empty=True)
         params = {}
 
-        acl_imdb = prepare_acl_imdb()
+        acl_imdb = read_prepared_data(args.data_dir)
         train_df = acl_imdb["train"]
         test_df = acl_imdb["test"]
         train_df["sentiment"] = train_df["sentiment"].astype(bool)
@@ -141,22 +210,27 @@ if __name__ == "__main__":
             unlabeled_df["cleaned_text"] = unlabeled_df["tokens"].str.join(" ")
             unlabeled_df = unlabeled_df.append(train_df)
 
-            unlabeled_txt = os.path.join(args.model_dir, args.skipgram_file + ".txt")
+            skipgram_bin = os.path.join(args.model_dir, args.skipgram_file)
+            unlabeled_txt = skipgram_bin + ".txt"
             prepare_fasttext_txt(unlabeled_df, text_col="cleaned_text", txt_out=unlabeled_txt)
 
-            skipgram_bin = os.path.join(args.model_dir, args.skipgram_file)
-            skipgram(args.fasttext_bin, unlabeled_txt, skipgram_bin)
+            unsupervised(args.fasttext_bin, unlabeled_txt, skipgram_bin)
             params.update({"pretrainedVectors": skipgram_bin + ".vec"})
 
-        train_txt = os.path.join(args.model_dir, args.model_file + ".txt")
+        model_bin = os.path.join(args.model_dir, args.model_file)
+        train_txt = model_bin + ".txt"
         prepare_fasttext_txt(train_df, text_col="cleaned_text", label_col="sentiment", txt_out=train_txt)
         test_txt = os.path.join(args.model_dir, "test.txt")
         prepare_fasttext_txt(test_df, text_col="cleaned_text", label_col="sentiment", txt_out=test_txt)
 
-        model_bin = os.path.join(args.model_dir, args.model_file)
         supervised(args.fasttext_bin, train_txt, model_bin, **params)
-        test(args.fasttext_bin, model_bin + ".bin", test_txt)
-        probs = predict_prob(args.fasttext_bin, model_bin + ".bin", test_txt)
+        test(args.fasttext_bin, model_bin, test_txt)
+
+        # pred = predict(args.fasttext_bin, model_bin, test_txt)
+        # probs = predict_prob(args.fasttext_bin, model_bin, test_txt, labels=[True])
+
+        # print_sentence_vectors(args.fasttext_bin, model_bin, train_txt, model_bin + ".txt.vec")
 
     except Exception as e:
         logger.exception(e)
+        raise e
