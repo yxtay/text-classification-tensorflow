@@ -5,8 +5,11 @@ import sys
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics import (average_precision_score, precision_recall_curve,
+                             precision_recall_fscore_support, roc_auc_score)
 
 from acl_imdb import read_prepared_data
+from evaluation import get_threshold_by_cutoff
 from logger import get_logger
 from utils import make_dirs, PROJECT_DIR
 
@@ -197,37 +200,51 @@ if __name__ == "__main__":
         make_dirs(args.model_dir + "/", empty=True)
         params = {}
 
+        # load data
         acl_imdb = read_prepared_data(args.data_dir)
         train_df = acl_imdb["train"]
         test_df = acl_imdb["test"]
         train_df["sentiment"] = train_df["sentiment"].astype(bool)
         test_df["sentiment"] = test_df["sentiment"].astype(bool)
-        train_df["cleaned_text"] = train_df["tokens"].str.join(" ")
-        test_df["cleaned_text"] = test_df["tokens"].str.join(" ")
+        y_true = test_df["sentiment"]
 
         if args.pretrained:
-            unlabeled_df = acl_imdb["unlabeled"]
-            unlabeled_df["cleaned_text"] = unlabeled_df["tokens"].str.join(" ")
-            unlabeled_df = unlabeled_df.append(train_df)
-
+            # prepare training data
+            unlabeled_df = acl_imdb["unlabeled"].copy().append(train_df)
             skipgram_bin = os.path.join(args.model_dir, args.skipgram_file)
             unlabeled_txt = skipgram_bin + ".txt"
             prepare_fasttext_txt(unlabeled_df, text_col="cleaned_text", txt_out=unlabeled_txt)
 
+            # fit fasttext vectors
+            logger.info("training FastText vectors.")
             unsupervised(args.fasttext_bin, unlabeled_txt, skipgram_bin)
             params.update({"pretrainedVectors": skipgram_bin + ".vec"})
 
+        # prepare training data
         model_bin = os.path.join(args.model_dir, args.model_file)
         train_txt = model_bin + ".txt"
         prepare_fasttext_txt(train_df, text_col="cleaned_text", label_col="sentiment", txt_out=train_txt)
         test_txt = os.path.join(args.model_dir, "test.txt")
         prepare_fasttext_txt(test_df, text_col="cleaned_text", label_col="sentiment", txt_out=test_txt)
 
+        # model training
+        logger.info("training FastText model.")
         supervised(args.fasttext_bin, train_txt, model_bin, **params)
+        logger.info("FastText model completed: %s.", model_bin)
+
+        # evaluation
         test(args.fasttext_bin, model_bin, test_txt)
 
-        # pred = predict(args.fasttext_bin, model_bin, test_txt)
-        # probs = predict_prob(args.fasttext_bin, model_bin, test_txt, labels=[True])
+        y_pred = predict(args.fasttext_bin, model_bin, test_txt) == "True"
+        precision, recall, f1_score, support = precision_recall_fscore_support(y_true, y_pred)
+        logger.info("precision: %.4f, recall: %.4f, f1_score: %.4f, support: %s",
+                    precision[1], recall[1], f1_score[1], support[1])
+
+        y_score = predict_prob(args.fasttext_bin, model_bin, test_txt, labels=[True])
+        precision, recall, threshold = get_threshold_by_cutoff(*precision_recall_curve(y_true, y_score))
+        logger.info("precision: %.4f, recall: %.4f, threshold: %.4f", precision, recall, threshold)
+        logger.info("roc auc: %.4f.", roc_auc_score(y_true, y_score))
+        logger.info("average precision: %.4f.", average_precision_score(y_true, y_score))
 
         # print_sentence_vectors(args.fasttext_bin, model_bin, train_txt, model_bin + ".txt.vec")
 
