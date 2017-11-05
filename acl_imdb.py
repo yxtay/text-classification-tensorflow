@@ -92,7 +92,6 @@ def read_data(src_dir="data", min_token_len=3):
     df = (parse_reviews(df, min_token_len=min_token_len)
           .drop(["review"], axis=1))
     logger.info("reviews parsed.")
-
     return df
 
 
@@ -177,3 +176,4 @@ if __name__ == "__main__":
 
     except Exception as e:
         logger.exception(e)
+        raise e

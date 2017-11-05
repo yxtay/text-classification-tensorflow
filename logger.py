@@ -44,3 +44,7 @@ def get_logger(name, log_path=os.path.join(os.path.dirname(__file__), "main.log"
         logger.addHandler(logging.NullHandler())
 
     return logger
+
+
+def float_array_string(arr):
+    return [float("{:.4f}".format(el)) for el in arr]

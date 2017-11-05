@@ -1,13 +1,13 @@
 # python
-/__pycache__
+/__pycache__/
 *.pyc
 
 # ide
-/.idea
+/.idea/
 
 # project
-/data
-/checkpoints
-/.ipynb_checkpoints
+/data/
+/checkpoints/
+/.ipynb_checkpoints/
 *.ipynb
 main.log*

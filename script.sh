@@ -3,4 +3,4 @@
 python acl_imdb.py
 
 # fasttext
-python fasttext.py --fasttext-bin $HOME/git/fastText/fasttext --pretrained
+python fasttext.py --fasttext-bin $HOME/git/fastText/fasttext
