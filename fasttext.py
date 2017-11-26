@@ -10,23 +10,23 @@ from sklearn.metrics import (average_precision_score, precision_recall_curve,
 
 from acl_imdb import read_prepared_data
 from evaluation import get_threshold_by_cutoff
-from logger import get_logger
+from logger import get_logger, get_name
 from utils import make_dirs, PROJECT_DIR
 
-logger = get_logger(__name__)
+name = get_name(__name__, __file__)
+logger = get_logger(name)
 
 
 def prepare_fasttext_txt(df, text_col="cleaned_text", label_col=None, txt_out=None):
+    fasttext_series = df[text_col].fillna("")
     if label_col is not None:
         n = df[label_col].shape[0]
         fasttext_series = (pd.Series(["__label__"] * n)
                            .str.cat(df[label_col].astype(str), sep="")
-                           .str.cat(df[text_col].fillna(""), sep=" "))
-    else:
-        fasttext_series = df[text_col].fillna("")
+                           .str.cat(fasttext_series, sep=" "))
 
     if txt_out is not None:
-        with open(txt_out, "w") as f:
+        with open(txt_out, "w", encoding="utf-8") as f:
             f.write(fasttext_series.str.cat(sep="\n"))
         logger.info("FastText txt prepared: %s.", txt_out)
     return fasttext_series
@@ -70,17 +70,18 @@ def print_word_vectors(fasttext_bin, model_bin, vocab_txt, vocab_vec):
     command = [fasttext_bin, "print-word-vectors", model_bin]
 
     # call FastText
-    with open(vocab_txt, "r") as fin, open(vocab_vec, "w") as fout:
+    with open(vocab_txt, "r", encoding="utf-8") as fin, \
+            open(vocab_vec, "w", encoding="utf-8") as fout:
         logger.debug("calling FastText: %s.", " ".join(command))
         subprocess.run(command, stdin=fin, stdout=fout)
 
     # process vec file
-    with open(vocab_vec, "r") as f:
+    with open(vocab_vec, "r", encoding="utf-8") as f:
         vecs = f.read().split("\n")
     n_row = len(vecs) - 1
     n_col = len(vecs[0].strip().split(" ")) - 1
 
-    with open(vocab_vec, "w") as f:
+    with open(vocab_vec, "w", encoding="utf-8") as f:
         f.write("{} {}".format(n_row, n_col))
         f.write("\n")
         f.write("\n".join(vecs))
@@ -169,7 +170,8 @@ def print_sentence_vectors(fasttext_bin, model_bin, test_txt, test_vec):
     command = [fasttext_bin, "print-sentence-vectors", model_bin]
 
     # call FastText
-    with open(test_txt, "r") as fin, open(test_vec, "w") as fout:
+    with open(test_txt, "r", encoding="utf-8") as fin, \
+            open(test_vec, "w", encoding="utf-8") as fout:
         logger.debug("calling FastText: %s.", " ".join(command))
         subprocess.run(command, stdin=fin, stdout=fout)
 
@@ -192,12 +194,12 @@ if __name__ == "__main__":
                         help="path of log file (default: %(default)s)")
 
     args = parser.parse_args()
-    logger = get_logger(__name__, log_path=args.log_path, console=True)
+    logger = get_logger(name, log_path=args.log_path, console=True)
     logger.debug("call: %s.", " ".join(sys.argv))
     logger.debug("ArgumentParse: %s.", args)
 
     try:
-        make_dirs(args.model_dir + "/", empty=True)
+        make_dirs(args.model_dir, empty=True)
         params = {}
 
         # load data
@@ -210,14 +212,15 @@ if __name__ == "__main__":
 
         if args.pretrained:
             # prepare training data
-            unlabeled_df = acl_imdb["unlabeled"].copy().append(train_df)
+            unlabelled_df = acl_imdb["unlabelled"].copy().append(train_df)
             skipgram_bin = os.path.join(args.model_dir, args.skipgram_file)
-            unlabeled_txt = skipgram_bin + ".txt"
-            prepare_fasttext_txt(unlabeled_df, text_col="cleaned_text", txt_out=unlabeled_txt)
+            unlabelled_txt = skipgram_bin + ".txt"
+            prepare_fasttext_txt(unlabelled_df, text_col="cleaned_text", txt_out=unlabelled_txt)
 
             # fit fasttext vectors
             logger.info("training FastText vectors.")
-            unsupervised(args.fasttext_bin, unlabeled_txt, skipgram_bin)
+            unsupervised(args.fasttext_bin, unlabelled_txt, skipgram_bin)
+            logger.info("FastText vectors completed: %s.", skipgram_bin)
             params.update({"pretrainedVectors": skipgram_bin + ".vec"})
 
         # prepare training data
@@ -245,8 +248,6 @@ if __name__ == "__main__":
         logger.info("precision: %.4f, recall: %.4f, threshold: %.4f", precision, recall, threshold)
         logger.info("roc auc: %.4f.", roc_auc_score(y_true, y_score))
         logger.info("average precision: %.4f.", average_precision_score(y_true, y_score))
-
-        # print_sentence_vectors(args.fasttext_bin, model_bin, train_txt, model_bin + ".txt.vec")
 
     except Exception as e:
         logger.exception(e)

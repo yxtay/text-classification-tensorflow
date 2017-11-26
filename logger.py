@@ -1,9 +1,13 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+from typing import Iterable
+
+from utils import path_join
 
 
-def get_logger(name, log_path=os.path.join(os.path.dirname(__file__), "main.log"), console=False):
+def get_logger(name: str, log_path: str = os.path.join(os.path.dirname(__file__), "main.log"),
+               console: bool = False) -> logging.Logger:
     """
     Simple logging wrapper that returns logger
     configured to log into file and console.
@@ -26,8 +30,8 @@ def get_logger(name, log_path=os.path.join(os.path.dirname(__file__), "main.log"
 
     # rotating file handler
     if log_path:
-        fh = RotatingFileHandler(log_path,
-                                 maxBytes=2 ** 20,  # 1 MB
+        fh = RotatingFileHandler(path_join(log_path),
+                                 maxBytes=10 * 2 ** 20,  # 10 MB
                                  backupCount=1)  # 1 backup
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(formatter)
@@ -40,11 +44,35 @@ def get_logger(name, log_path=os.path.join(os.path.dirname(__file__), "main.log"
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
-    if len(logger.handlers) == 0:
+    # null handler
+    if not (log_path or console):
         logger.addHandler(logging.NullHandler())
 
     return logger
 
 
-def float_array_string(arr):
-    return [float("{:.4f}".format(el)) for el in arr]
+def get_name(name, file: str) -> str:
+    """
+    get logger name as module or file name
+
+    Args:
+        name: __name__, module name
+        file: __file__, file name
+
+    Returns:
+        logger name
+    """
+    return os.path.basename(file) if name == "__main__" else name
+
+
+def float_array_string(arr: Iterable[float]) -> str:
+    """
+    format array of floats to 4 decimal places
+
+    Args:
+        arr: array of floats
+
+    Returns:
+        formatted string
+    """
+    return "[" + ", ".join(["{:.4f}".format(el) for el in arr]) + "]"

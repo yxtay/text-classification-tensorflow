@@ -7,15 +7,17 @@ import pandas as pd
 from bs4 import BeautifulSoup
 import shutil
 import tarfile
+import tensorflow as tf
 from urllib.parse import urlsplit
 
 import requests
 
-from logger import get_logger
-from utils import clean_tokenise_text, make_dirs, PROJECT_DIR
+from logger import get_logger, get_name
+from utils import tokenise_text, make_dirs, PROJECT_DIR
 from vocab import VocabDict
 
-logger = get_logger(__name__)
+name = get_name(__name__, __file__)
+logger = get_logger(name)
 
 
 def download_data(url="http://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz",
@@ -24,7 +26,7 @@ def download_data(url="http://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.t
     _, _, url_path, _, _ = urlsplit(url)
     filename = os.path.basename(url_path)
     dest = os.path.join(dest_dir, filename)
-    make_dirs(dest)
+    make_dirs(dest_dir)
 
     # downlaod tar.gz
     if not os.path.exists(dest):
@@ -71,7 +73,7 @@ def parse_reviews(df, review_col="review", min_token_len=3):
     df = df.copy()
     df["text"] = (df[review_col].fillna("")
                   .apply(lambda s: BeautifulSoup(s, "lxml").get_text()))
-    df = clean_tokenise_text(df, min_token_len=min_token_len)
+    df = tokenise_text(df, min_token_len=min_token_len)
     return df
 
 
@@ -84,10 +86,10 @@ def read_data(src_dir="data", min_token_len=3):
     df.loc[df["label"] == "neg", "sentiment"] = 0
 
     # rating
-    labeled_mask = ~df["sentiment"].isnull()
-    df.loc[labeled_mask, "rating"] = (df.loc[labeled_mask, "id"]
-                                      .str.split("_")
-                                      .str.get(1).astype(int))
+    labelled_mask = ~df["sentiment"].isnull()
+    df.loc[labelled_mask, "rating"] = (df.loc[labelled_mask, "id"]
+                                       .str.split("_")
+                                       .str.get(1).astype(int))
 
     df = (parse_reviews(df, min_token_len=min_token_len)
           .drop(["review"], axis=1))
@@ -98,14 +100,14 @@ def read_data(src_dir="data", min_token_len=3):
 def split_df(df):
     # masks
     train_mask = df["group"] == "train"
-    unlabeled_mask = df["label"] == "unsup"
+    unlabelled_mask = df["label"] == "unsup"
 
     # split dataframe
-    train_df = df.loc[train_mask & ~unlabeled_mask, :].reset_index(drop=True)
-    unlabeled_df = df.loc[unlabeled_mask, :].reset_index(drop=True)
+    train_df = df.loc[train_mask & ~unlabelled_mask, :].reset_index(drop=True)
+    unlabelled_df = df.loc[unlabelled_mask, :].reset_index(drop=True)
     test_df = df.loc[~train_mask, :].reset_index(drop=True)
 
-    return {"train": train_df, "unlabeled": unlabeled_df, "test": test_df}
+    return {"train": train_df, "unlabelled": unlabelled_df, "test": test_df}
 
 
 def prepare_data(src_dir="data", min_token_len=3, min_count=5):
@@ -123,8 +125,12 @@ def prepare_data(src_dir="data", min_token_len=3, min_count=5):
 
     # save prepared data
     for key in outputs:
+        # csv
         (outputs[key].drop(["tokens", "token_count", "token_ids"], axis=1)
          .to_csv(os.path.join(src_dir, key + ".csv"), index=False))
+        # tfrecords
+        to_tfrecord(outputs[key], os.path.join(src_dir, key + ".tfrecord"))
+    # vocab
     vocab.save(os.path.join(src_dir, "vocab.pkl"))
     logger.info("prepared data saved: %s.", src_dir)
 
@@ -132,17 +138,53 @@ def prepare_data(src_dir="data", min_token_len=3, min_count=5):
     return outputs
 
 
+def to_tfrecord(df, file_path):
+    def _int64_feature(value):
+        return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
+
+    def _float_feature(value):
+        return tf.train.Feature(float_list=tf.train.FloatList(value=[value]))
+
+    def _bytes_feature(value):
+        return tf.train.Feature(bytes_list=tf.train.BytesList(value=[tf.compat.as_bytes(value)]))
+
+    def _int64_feature_list(values):
+        return tf.train.FeatureList(feature=[_int64_feature(v) for v in values])
+
+    def _bytes_feature_list(values):
+        return tf.train.FeatureList(feature=[_bytes_feature(v) for v in values])
+
+    with tf.python_io.TFRecordWriter(file_path) as writer:
+        for row in df.itertuples():
+            example = tf.train.SequenceExample(
+                context=tf.train.Features(
+                    feature={
+                        "id": _bytes_feature(getattr(row, "id")),
+                        "group": _bytes_feature(getattr(row, "group")),
+                        "label": _bytes_feature(getattr(row, "label")),
+                        "sentiment": _float_feature(getattr(row, "sentiment")),
+                        "rating": _float_feature(getattr(row, "rating")),
+                        "text": _bytes_feature(getattr(row, "text")),
+                        "cleaned_text": _bytes_feature(getattr(row, "cleaned_text")),
+                        "token_count": _int64_feature(getattr(row, "token_count")),
+                    }),
+                feature_lists=tf.train.FeatureLists(
+                    feature_list={
+                        "tokens": _bytes_feature_list(getattr(row, "tokens")),
+                        "token_ids": _int64_feature_list(getattr(row, "token_ids")),
+                    }))
+            writer.write(example.SerializeToString())
+
+
 def read_prepared_data(src_dir="data"):
     # load data
     src_dir = os.path.join(src_dir, "aclImdb")
-    train_df = pd.read_csv(os.path.join(src_dir, "train.csv"))
-    unlabeled_df = pd.read_csv(os.path.join(src_dir, "unlabeled.csv"))
-    test_df = pd.read_csv(os.path.join(src_dir, "test.csv"))
+    outputs = {key: pd.read_csv(os.path.join(src_dir, key + ".csv"))
+               for key in ["train", "unlabelled", "test"]}
     vocab = VocabDict.load(os.path.join(src_dir, "vocab.pkl"))
     logger.info("prepared data loaded: %s.", src_dir)
 
     # process data
-    outputs = {"train": train_df, "unlabeled": unlabeled_df, "test": test_df}
     for key in outputs:
         df = outputs[key].copy()
         df["tokens"] = df["cleaned_text"].str.split(" ")
@@ -155,6 +197,64 @@ def read_prepared_data(src_dir="data"):
     return outputs
 
 
+def tf_dataset_pipeline(features=("sentiment", "token_ids"), shuffle=True, batch_size=32):
+    context_features = {
+        "id": tf.FixedLenFeature((), tf.string),
+        "group": tf.FixedLenFeature((), tf.string),
+        "label": tf.FixedLenFeature((), tf.string),
+        "sentiment": tf.FixedLenFeature((), tf.float32),
+        "rating": tf.FixedLenFeature((), tf.float32),
+        "text": tf.FixedLenFeature((), tf.string),
+        "cleaned_text": tf.FixedLenFeature((), tf.string),
+        "token_count": tf.FixedLenFeature((), tf.int64),
+    }
+    sequence_features = {
+        "tokens": tf.FixedLenSequenceFeature((), tf.string),
+        "token_ids": tf.FixedLenSequenceFeature((), tf.int64),
+    }
+
+    def parse_tfrecord(serialized_example):
+        parsed_context, parsed_sequence = tf.parse_single_sequence_example(
+            serialized_example,
+            context_features={key: context_features[key]
+                              for key in context_features
+                              if key in features},
+            sequence_features={key: sequence_features[key]
+                               for key in sequence_features
+                               if key in features}
+        )
+        parsed_features = parsed_context.copy()
+        parsed_features.update(parsed_sequence)
+        return parsed_features
+
+    file_input = tf.placeholder(tf.string, [None], "file_inputs")
+
+    dataset = tf.data.TFRecordDataset(file_input)
+    dataset = dataset.map(parse_tfrecord)
+    if shuffle:
+        dataset = dataset.shuffle(10000)
+    dataset = dataset.padded_batch(batch_size=batch_size,
+                                   padded_shapes={key: [None] if key in sequence_features else []
+                                                  for key in features})
+
+    iterator = dataset.make_initializable_iterator()
+    element = iterator.get_next()
+    return {"file_input": file_input, "dataset": dataset,
+            "data_iterator": iterator, "data_element": element}
+
+
+def read_tfrecord(src_dir="data"):
+    # load data
+    src_dir = os.path.join(src_dir, "aclImdb")
+    file_input = [os.path.join(src_dir, "train.tfrecord")]
+
+    dataset_pipeline = tf_dataset_pipeline(["id", "sentiment", "rating", "tokens", "token_ids"])
+    with tf.Session() as sess:
+        sess.run(dataset_pipeline["data_iterator"].initializer,
+                 {dataset_pipeline["file_input"]: file_input})
+        print(sess.run(dataset_pipeline["data_element"]))
+
+
 if __name__ == "__main__":
     parser = ArgumentParser(description="Download, extract and prepare ACL IMDB data.")
     parser.add_argument("--url", default="http://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz",
@@ -165,7 +265,7 @@ if __name__ == "__main__":
                         help="path of log file (default: %(default)s)")
     args = parser.parse_args()
 
-    logger = get_logger(__name__, log_path=args.log_path, console=True)
+    logger = get_logger(name, log_path=args.log_path, console=True)
     logger.debug("call: %s.", " ".join(sys.argv))
     logger.debug("ArgumentParser: %s.", args)
 
